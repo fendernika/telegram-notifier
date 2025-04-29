@@ -2,7 +2,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
-const fetch = require('node-fetch');
+const https = require('https');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -33,7 +33,7 @@ const hashSHA256 = (input) =>
   crypto.createHash('sha256').update(input.trim().toLowerCase()).digest('hex');
 
 async function sendLeadToMeta({ email, phone, firstName, url, userAgent }) {
-  const payload = {
+  const payload = JSON.stringify({
     data: [
       {
         event_name: 'Lead',
@@ -48,33 +48,63 @@ async function sendLeadToMeta({ email, phone, firstName, url, userAgent }) {
         }
       }
     ]
+  });
+
+  const options = {
+    hostname: 'graph.facebook.com',
+    path: `/v19.0/${PIXEL_ID}/events?access_token=${ACCESS_TOKEN}`,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(payload)
+    }
   };
 
-  try {
-    const response = await fetch(`https://graph.facebook.com/v19.0/${PIXEL_ID}/events?access_token=${ACCESS_TOKEN}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+  const req = https.request(options, (res) => {
+    res.setEncoding('utf8');
+    let body = '';
+    res.on('data', chunk => body += chunk);
+    res.on('end', () => {
+      console.log('[Meta CAPI] Lead sent:', body);
     });
+  });
 
-    const result = await response.json();
-    console.log('[Meta CAPI] Lead sent:', result);
-  } catch (err) {
-    console.error('[Meta CAPI] Error:', err.message);
-  }
+  req.on('error', (e) => {
+    console.error('[Meta CAPI] Error:', e.message);
+  });
+
+  req.write(payload);
+  req.end();
 }
 
 // 🚀 Telegram
 const sendToTelegram = async (text) => {
   const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-  await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: TELEGRAM_CHAT_ID,
-      text,
-    }),
+  const payload = JSON.stringify({
+    chat_id: TELEGRAM_CHAT_ID,
+    text,
   });
+
+  const options = {
+    hostname: 'api.telegram.org',
+    path: `/bot${TELEGRAM_TOKEN}/sendMessage`,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(payload)
+    }
+  };
+
+  const req = https.request(options, (res) => {
+    res.on('data', () => {});
+  });
+
+  req.on('error', (e) => {
+    console.error('[Telegram] Error:', e.message);
+  });
+
+  req.write(payload);
+  req.end();
 };
 
 // 📩 Email
@@ -107,7 +137,6 @@ app.post('/notify', async (req, res) => {
     await sendToTelegram(message);
     await sendEmail('New Webflow Form Submission', `<pre>${message}</pre>`);
 
-    // 💥 Отправка события Lead в Meta CAPI
     await sendLeadToMeta({
       email: req.body.email,
       phone: req.body.phone,
